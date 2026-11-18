@@ -1,0 +1,6 @@
+name = "kernel-ai-datagen"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[ai]
+binding = "AI"

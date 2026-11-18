@@ -42,8 +42,8 @@ def generate(model, tok, prompt, max_new_tokens=60, device="cpu"):
 
 def main():
     here = os.path.dirname(__file__)
-    corpus_path = os.path.join(here, "../data/assistant_corpus.txt")
-    tokenizer_path = os.path.join(here, "../data/assistant_tokenizer.json")
+    corpus_path = os.path.join(here, "../data/kernel_ai_final_corpus.txt")
+    tokenizer_path = os.path.join(here, "../data/kernel_ai_final_tokenizer.json")
 
     seq_len = 128
     data, tok = load_tokens(corpus_path, tokenizer_path, seq_len=seq_len, max_chars=3_000_000)
@@ -81,15 +81,17 @@ def main():
     assert last_avg < first_avg, "loss did not decrease"
     print("PASS: loss decreased on REAL natural-language + instruction data.\n")
 
-    print("--- sample generation (greedy, 150 steps of training, honest output) ---")
-    for prompt in ["Once upon a time,", "### Instruction:\nWhat is the capital of France?\n\n### Response:\n"]:
+    print("--- sample generation (greedy, 80 steps of training, honest output) ---")
+    for prompt in ["Once upon a time,",
+                   "### Instruction:\nWhat is the capital of France?\n\n### Response:\n",
+                   "### Instruction:\nWhat does this Kernel program print when run?\n\n### Kernel code:\nfn main():\n    let x = 5\n    print(x)\n\n### Response:\n"]:
         out = generate(model, tok, prompt, max_new_tokens=40)
         print(f"PROMPT: {prompt!r}")
         print(f"OUTPUT: {out!r}\n")
 
     ckpt_dir = os.path.join(here, "../checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    ckpt_path = os.path.join(ckpt_dir, "kernel_ai_smoke_v0.pt")
+    ckpt_path = os.path.join(ckpt_dir, "kernel_ai_final_smoke_v0.pt")
     torch.save({"model": model.state_dict(), "cfg": vars(cfg)}, ckpt_path)
     print(f"checkpoint saved: {ckpt_path}")
 
