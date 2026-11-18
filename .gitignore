@@ -4,3 +4,8 @@ data/assistant_corpus.txt
 checkpoints/
 __pycache__/
 *.pyc
+!checkpoints/kernel_ai_v0.npz
+js_test/
+worker_test/
+py_worker_test/
+node_modules/

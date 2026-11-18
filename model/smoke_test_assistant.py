@@ -87,6 +87,12 @@ def main():
         print(f"PROMPT: {prompt!r}")
         print(f"OUTPUT: {out!r}\n")
 
+    ckpt_dir = os.path.join(here, "../checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_path = os.path.join(ckpt_dir, "kernel_ai_smoke_v0.pt")
+    torch.save({"model": model.state_dict(), "cfg": vars(cfg)}, ckpt_path)
+    print(f"checkpoint saved: {ckpt_path}")
+
 
 if __name__ == "__main__":
     main()
