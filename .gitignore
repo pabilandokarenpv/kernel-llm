@@ -1,4 +1,6 @@
 data/corpus*.jsonl
+data/raw/
+data/assistant_corpus.txt
 checkpoints/
 __pycache__/
 *.pyc
