@@ -7,3 +7,4 @@
 | [ARD-003](./ARD-003-serving-infrastructure.md) | Serving on Cloudflare Python Workers + pure numpy, after ONNX/onnxruntime-web failed | Accepted |
 | [ARD-004](./ARD-004-training-infrastructure.md) | Training on Kaggle (cardless API-driven), after Modal's GPU card gate | Accepted |
 | [ARD-005](./ARD-005-data-strategy.md) | Data strategy: real open datasets + narrow self-distillation, merged into one corpus | Accepted |
+| [ARD-006](./ARD-006-cloudflare-tunnel-serving.md) | Serving via Cloudflare Tunnel, after both Workers Free and HF Spaces turned out paid-only | Accepted |

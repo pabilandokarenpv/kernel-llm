@@ -2,8 +2,9 @@
 
 **Status:** Product shell shipped and deployed; first real training run on
 Kaggle completed — val_loss 10.08 → 2.27 over 6,000 steps, confirmed real
-(not a smoke test). Serving swap blocked on a confirmed Cloudflare Workers
-free-tier platform limit (10ms CPU/request — see R8, Open items).
+(not a smoke test). Serving is live at
+https://kernel-ai.forgirlswhobuild.com/ via a Cloudflare Tunnel, $0
+cost, verified end-to-end with a real generation through the public URL.
 
 ## Problem
 
@@ -63,7 +64,7 @@ satisfies the actual goal.
 | R5 | Model is trained from random init, not fine-tuned from an existing pretrained model | ✅ by construction (`model.py` is a from-scratch architecture, Kaggle run starts from fresh weights) |
 | R6 | No hosted model ever answers a real user message | ✅ enforced by architecture (ARD-002) — chat endpoint serves exclusively from our checkpoint |
 | R7 | Training data includes broad, real, free English/code/reasoning sources, not just Kernel-language content | ✅ shipped (ARD-005) — 110,187-example merged corpus |
-| R8 | $0 serving cost at low traffic | ⚠️ blocked — Cloudflare Workers Free caps CPU time at **10ms/request** (confirmed via `wrangler tail`, real error: "Worker exceeded CPU time limit"), not a probabilistic cold-start issue as ARD-003 originally guessed but a hard platform wall too small for any real model forward pass. Decision pending with en (pay $5/mo Workers Paid for 30s-5min CPU/request, find another free host, or shrink the model further). |
+| R8 | $0 serving cost at low traffic | ✅ shipped — Cloudflare Tunnel to a persistent process, genuinely $0, no card, no per-request CPU-time wall (that specific wall killed the Workers-only path — see ARD-003). Live at https://kernel-ai.forgirlswhobuild.com/, verified end-to-end via `gradio_client` against the real public URL. |
 | R9 | $0 training cost | ✅ Kaggle free GPU quota, cardless (ARD-004) |
 | R10 | Real trained checkpoint, verified against a genuine training run (not a smoke test claimed as "done") | ✅ shipped — 6,000 steps on Kaggle T4, val_loss 10.08 → 2.27, sample generations verified real (coherent English prose, structurally valid Kernel syntax, correct GSM8K answer-format though not yet reliably correct arithmetic) |
 
@@ -101,14 +102,18 @@ flowchart LR
   structurally valid Kernel syntax (correct indentation/nesting), and
   correct GSM8K-style `<<...>>` answer formatting (arithmetic itself not
   yet reliably correct — honestly reported, not glossed over).
-- Serving swap code is done (Worker updated to the real checkpoint, fp16
-  export verified against fp32 PyTorch reference, max diff 0.0077) but
-  **deployment is blocked**: Cloudflare Workers Free's 10ms CPU-time-per-
-  request limit is a hard wall, confirmed via live `wrangler tail`
-  ("Worker exceeded CPU time limit"), not something any amount of
-  optimization within free tier fixes for a real transformer forward
-  pass. Decision pending with en: pay the $5/mo Workers Paid minimum
-  (usage-based, not an idle VM — closest fit to en's standing infra
-  preference), try another free host for inference only, or shrink the
-  model further (real risk: still may not fit under 10ms, and hurts
-  quality either way).
+- **Serving is live**: https://kernel-ai.forgirlswhobuild.com/ — a
+  Cloudflare Tunnel (genuinely $0, no card, no per-request CPU-time wall
+  since compute runs on real persistent infrastructure rather than inside
+  a Worker) pointed at a Gradio app running the real checkpoint via the
+  same pure-numpy forward pass built for the abandoned Workers path.
+  Verified end-to-end through the actual public URL via `gradio_client`,
+  not just "the page loads": real generation, real response, 7.7s for 25
+  tokens. This is what actually shipped, after both of the other two
+  serving paths considered turned out to be paid-only:
+  - Cloudflare Workers Free: confirmed hard 10ms CPU-time/request wall
+    (see ARD-003's earlier revisions) — would need Workers Paid, $5/mo.
+  - HF Spaces: confirmed (real 402 error, not a guess) that hosting any
+    Gradio/Docker Space on compute now requires HF PRO, $9/mo — a policy
+    HF apparently tightened at some point, since free CPU Basic Gradio
+    Spaces used to be the default assumption.
