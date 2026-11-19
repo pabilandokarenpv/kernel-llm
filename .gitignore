@@ -14,3 +14,5 @@ py_worker_test/.wrangler/
 py_worker_test/dist/
 py_worker_test/python_modules/
 node_modules/
+hf_space/*.raw
+hf_space/*tokenizer*.json
