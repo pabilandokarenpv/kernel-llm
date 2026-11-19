@@ -8,6 +8,11 @@ Spaces' free CPU Basic tier runs a persistent container instead of a
 per-request CPU budget, so the same numpy_forward.py / bpe_tokenizer.py
 code (already verified byte-for-byte against the real PyTorch model)
 just runs here without a CPU-time wall.
+
+UI: a custom gr.Blocks layout (not the stock ChatInterface look) styled
+to be minimal/dark like Claude or ChatGPT — Gradio's own chrome (footer,
+settings gear, "Use via API", the sliders panel) is hidden via CSS so the
+only thing visible is the chat itself.
 """
 import json
 import time
@@ -45,7 +50,7 @@ for k, info in manifest.items():
 print(f"checkpoint loaded in {time.time() - t0:.2f}s, {len(w)} arrays")
 
 
-def respond(message, history, max_new_tokens, temperature):
+def generate_reply(message, history, max_new_tokens, temperature):
     ids = tok.encode(message)
     input_ids = np.array([ids], dtype=np.int64)
     rng = np.random.default_rng()
@@ -56,24 +61,77 @@ def respond(message, history, max_new_tokens, temperature):
     )
     elapsed = time.time() - t0
     text = tok.decode(out_ids)
-    return f"{text}\n\n_({elapsed:.1f}s, {len(out_ids) - len(ids)} tokens generated)_"
+    meta = f"\n\n<span class='gen-meta'>{elapsed:.1f}s · {len(out_ids) - len(ids)} tokens</span>"
+    return text + meta
 
 
-demo = gr.ChatInterface(
-    fn=respond,
-    additional_inputs=[
-        gr.Slider(1, 64, value=30, step=1, label="max_new_tokens"),
-        gr.Slider(0.1, 1.5, value=0.8, step=0.05, label="temperature"),
-    ],
-    title="Kernel AI — genuinely from-scratch LLM",
-    description=(
-        "33M params, trained from random init on a 110,187-example corpus "
-        "(TinyStories + OASST2 + CodeAlpaca + Dolly15k + GSM8K + Kernel-lang "
-        "traces), 6000 steps on a free Kaggle T4, val_loss 10.08 → 2.27. "
-        "Honest expectations: small model, coherent short prose, structurally "
-        "correct code/math formatting, not always factually/numerically correct."
-    ),
-)
+CSS = """
+.gradio-container { max-width: 760px !important; margin: 0 auto !important;
+    background: #1a1a1a !important; }
+footer, .built-with, #gradio-api-pill, .settings { display: none !important; }
+#header-row { padding: 28px 8px 4px 8px; text-align: center; }
+#header-row h1 { font-size: 1.15rem; font-weight: 600; color: #ececec;
+    letter-spacing: -0.01em; margin: 0 0 4px 0; }
+#header-row p { font-size: 0.8rem; color: #8a8a8a; margin: 0; line-height: 1.5; }
+#chatbox { background: transparent !important; border: none !important; }
+#chatbox .message-wrap { background: transparent !important; }
+.message.user { background: #2f2f2f !important; border-radius: 18px !important;
+    color: #ececec !important; border: none !important; }
+.message.bot, .message.bot.panel-full-width { background: transparent !important;
+    color: #d8d8d8 !important; border: none !important; box-shadow: none !important; }
+.gen-meta { font-size: 0.7rem; color: #6a6a6a; }
+#input-row { max-width: 760px; margin: 0 auto; padding: 0 8px 20px 8px; }
+#input-row textarea { background: #2b2b2b !important; border: 1px solid #3a3a3a !important;
+    border-radius: 24px !important; color: #ececec !important; }
+#advanced-accordion { border: none !important; background: transparent !important; }
+#advanced-accordion .label-wrap { color: #6a6a6a !important; font-size: 0.75rem !important; }
+button.primary { background: #ececec !important; color: #1a1a1a !important;
+    border-radius: 20px !important; border: none !important; }
+"""
+
+with gr.Blocks(title="Kernel AI") as demo:
+    with gr.Column(elem_id="header-row"):
+        gr.Markdown(
+            "# Kernel AI\n"
+            "<p>A genuinely from-scratch LLM — 33M params, trained from random init, "
+            "no hosted model behind this. Small and honest: coherent short prose, "
+            "structurally correct code/math, not always factually correct.</p>"
+        )
+
+    chatbot = gr.Chatbot(elem_id="chatbox", height=480, show_label=False,
+                          avatar_images=(None, None), buttons=["copy"], layout="bubble")
+
+    with gr.Accordion("Advanced", open=False, elem_id="advanced-accordion"):
+        max_new_tokens = gr.Slider(1, 64, value=30, step=1, label="max_new_tokens")
+        temperature = gr.Slider(0.1, 1.5, value=0.8, step=0.05, label="temperature")
+
+    with gr.Row(elem_id="input-row"):
+        msg = gr.Textbox(placeholder="Message Kernel AI...", show_label=False, scale=9,
+                          container=False, autofocus=True)
+        send = gr.Button("↑", scale=1, variant="primary")
+
+    def user_turn(message, history):
+        return "", history + [{"role": "user", "content": message}]
+
+    def bot_turn(history, max_new_tokens, temperature):
+        last = history[-1]
+        user_message = last["content"] if isinstance(last, dict) else last.content
+        if isinstance(user_message, list):
+            # Gradio 6 can wrap content as a list of parts; flatten to text.
+            user_message = "".join(
+                p if isinstance(p, str) else p.get("text", "") for p in user_message
+            )
+        reply = generate_reply(user_message, history, max_new_tokens, temperature)
+        history.append({"role": "assistant", "content": reply})
+        return history
+
+    msg.submit(user_turn, [msg, chatbot], [msg, chatbot], queue=False).then(
+        bot_turn, [chatbot, max_new_tokens, temperature], [chatbot]
+    )
+    send.click(user_turn, [msg, chatbot], [msg, chatbot], queue=False).then(
+        bot_turn, [chatbot, max_new_tokens, temperature], [chatbot]
+    )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False,
+                 css=CSS, theme=gr.themes.Base(primary_hue="neutral", neutral_hue="neutral"))
