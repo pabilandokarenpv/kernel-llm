@@ -66,49 +66,92 @@ def generate_reply(message, history, max_new_tokens, temperature):
 
 
 CSS = """
-.gradio-container { max-width: 760px !important; margin: 0 auto !important;
-    background: #1a1a1a !important; }
-footer, .built-with, #gradio-api-pill, .settings { display: none !important; }
-#header-row { padding: 28px 8px 4px 8px; text-align: center; }
-#header-row h1 { font-size: 1.15rem; font-weight: 600; color: #ececec;
-    letter-spacing: -0.01em; margin: 0 0 4px 0; }
-#header-row p { font-size: 0.8rem; color: #8a8a8a; margin: 0; line-height: 1.5; }
-#chatbox { background: transparent !important; border: none !important; }
+:root {
+  --bg: #212121; --bg-elevated: #2a2a2a; --bubble-user: #2f2f2f;
+  --border: #3a3a3a; --text: #ececec; --text-muted: #8e8ea0;
+}
+html, body { background: var(--bg) !important; }
+* { box-sizing: border-box; }
+.gradio-container, .gradio-container .main, gradio-app {
+  background: var(--bg) !important; max-width: 100% !important;
+  min-height: 100vh !important; font-family: -apple-system, BlinkMacSystemFont,
+  "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+}
+footer, .built-with, #gradio-api-pill, .settings, .show-api { display: none !important; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #444; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+#app-shell { max-width: 820px; margin: 0 auto; width: 100%; padding: 0 20px; }
+
+#header-row { position: sticky; top: 0; z-index: 20; background: var(--bg);
+  padding: 22px 0 14px 0; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.06); }
+#header-row h1 { font-size: 1.1rem; font-weight: 600; color: var(--text);
+  letter-spacing: -0.01em; margin: 0 0 4px 0; }
+#header-row p { font-size: 0.8rem; color: var(--text-muted); margin: 0;
+  line-height: 1.5; max-width: 560px; margin: 0 auto; }
+
+#chatbox { background: transparent !important; border: none !important;
+  padding-top: 8px !important; }
 #chatbox .message-wrap { background: transparent !important; }
-.message.user { background: #2f2f2f !important; border-radius: 18px !important;
-    color: #ececec !important; border: none !important; }
+.message.user { background: var(--bubble-user) !important; border-radius: 20px !important;
+  color: var(--text) !important; border: none !important; padding: 10px 16px !important;
+  animation: fadeIn 0.25s ease; }
 .message.bot, .message.bot.panel-full-width { background: transparent !important;
-    color: #d8d8d8 !important; border: none !important; box-shadow: none !important; }
+  color: #d8d8d8 !important; border: none !important; box-shadow: none !important;
+  line-height: 1.65 !important; animation: fadeIn 0.25s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .gen-meta { font-size: 0.7rem; color: #6a6a6a; }
-#input-row { max-width: 760px; margin: 0 auto; padding: 0 8px 20px 8px; }
-#input-row textarea { background: #2b2b2b !important; border: 1px solid #3a3a3a !important;
-    border-radius: 24px !important; color: #ececec !important; }
+
 #advanced-accordion { border: none !important; background: transparent !important; }
-#advanced-accordion .label-wrap { color: #6a6a6a !important; font-size: 0.75rem !important; }
-button.primary { background: #ececec !important; color: #1a1a1a !important;
-    border-radius: 20px !important; border: none !important; }
+#advanced-accordion .label-wrap { color: var(--text-muted) !important; font-size: 0.75rem !important; }
+
+#input-dock { position: sticky; bottom: 0; background: var(--bg);
+  padding: 10px 0 calc(16px + env(safe-area-inset-bottom)) 0; }
+#input-row textarea { background: var(--bg-elevated) !important; border: 1px solid var(--border) !important;
+  border-radius: 24px !important; color: var(--text) !important; font-size: 1rem !important; }
+#input-row textarea::placeholder { color: var(--text-muted) !important; }
+button.primary { background: var(--text) !important; color: var(--bg) !important;
+  border-radius: 20px !important; border: none !important; min-width: 44px !important; }
+
+/* Tablet */
+@media (max-width: 900px) {
+  #app-shell { padding: 0 14px; }
+}
+/* Mobile */
+@media (max-width: 600px) {
+  #app-shell { padding: 0 10px; }
+  #header-row { padding: 14px 0 10px 0; }
+  #header-row h1 { font-size: 1rem; }
+  #header-row p { font-size: 0.72rem; }
+  .message.user, .message.bot { font-size: 0.95rem !important; }
+  #input-row textarea { font-size: 16px !important; } /* 16px avoids iOS auto-zoom on focus */
+  button.primary { min-width: 40px !important; }
+}
 """
 
 with gr.Blocks(title="Kernel AI") as demo:
-    with gr.Column(elem_id="header-row"):
-        gr.Markdown(
-            "# Kernel AI\n"
-            "<p>A genuinely from-scratch LLM — 33M params, trained from random init, "
-            "no hosted model behind this. Small and honest: coherent short prose, "
-            "structurally correct code/math, not always factually correct.</p>"
-        )
+    with gr.Column(elem_id="app-shell"):
+        with gr.Column(elem_id="header-row"):
+            gr.Markdown(
+                "# Kernel AI\n"
+                "<p>A genuinely from-scratch LLM — 33M params, trained from random init, "
+                "no hosted model behind this. Small and honest: coherent short prose, "
+                "structurally correct code/math, not always factually correct.</p>"
+            )
 
-    chatbot = gr.Chatbot(elem_id="chatbox", height=480, show_label=False,
-                          avatar_images=(None, None), buttons=["copy"], layout="bubble")
+        chatbot = gr.Chatbot(elem_id="chatbox", height="65vh", show_label=False,
+                              avatar_images=(None, None), buttons=["copy"], layout="bubble")
 
-    with gr.Accordion("Advanced", open=False, elem_id="advanced-accordion"):
-        max_new_tokens = gr.Slider(1, 64, value=30, step=1, label="max_new_tokens")
-        temperature = gr.Slider(0.1, 1.5, value=0.8, step=0.05, label="temperature")
+        with gr.Accordion("Advanced", open=False, elem_id="advanced-accordion"):
+            max_new_tokens = gr.Slider(1, 64, value=30, step=1, label="max_new_tokens")
+            temperature = gr.Slider(0.1, 1.5, value=0.8, step=0.05, label="temperature")
 
-    with gr.Row(elem_id="input-row"):
-        msg = gr.Textbox(placeholder="Message Kernel AI...", show_label=False, scale=9,
-                          container=False, autofocus=True)
-        send = gr.Button("↑", scale=1, variant="primary")
+        with gr.Column(elem_id="input-dock"):
+            with gr.Row(elem_id="input-row"):
+                msg = gr.Textbox(placeholder="Message Kernel AI...", show_label=False, scale=9,
+                                  container=False, autofocus=True)
+                send = gr.Button("↑", scale=1, variant="primary")
 
     def user_turn(message, history):
         return "", history + [{"role": "user", "content": message}]
