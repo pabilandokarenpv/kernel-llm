@@ -50,18 +50,35 @@ for k, info in manifest.items():
 print(f"checkpoint loaded in {time.time() - t0:.2f}s, {len(w)} arrays")
 
 
+EOS_ID = 4  # <|endoftext|> -- the document separator every training source used;
+            # without stopping on it, generation drifts into the NEXT document's
+            # leaked template text (confirmed real bug: a user got back
+            # "### Instruction:\nWhat are some ways..." garbage from an
+            # unrelated training example, not a hallucination, an un-stopped
+            # generation running straight through a document boundary)
+
+
 def generate_reply(message, history, max_new_tokens, temperature):
-    ids = tok.encode(message)
+    # The training corpus is entirely "### Instruction:\n{msg}\n\n### Response:\n{reply}"
+    # (see data/build_final_corpus.py) -- prompting in that exact format,
+    # not the raw message, is what the model actually learned to complete
+    # coherently; feeding it bare text was a prompt/training-format mismatch.
+    prompt = f"### Instruction:\n{message}\n\n### Response:\n"
+    ids = tok.encode(prompt)
     input_ids = np.array([ids], dtype=np.int64)
     rng = np.random.default_rng()
     t0 = time.time()
     out_ids = generate(
         input_ids, w, N_LAYERS, N_HEADS, SEQ_LEN,
-        max_new_tokens=int(max_new_tokens), temperature=float(temperature), rng=rng,
+        max_new_tokens=int(max_new_tokens), temperature=float(temperature),
+        rng=rng, eos_id=EOS_ID,
     )
     elapsed = time.time() - t0
-    text = tok.decode(out_ids)
-    n_new = len(out_ids) - len(ids)
+    completion_ids = out_ids[len(ids):]
+    if completion_ids and completion_ids[-1] == EOS_ID:
+        completion_ids = completion_ids[:-1]
+    text = tok.decode(completion_ids).strip()
+    n_new = len(completion_ids)
     return text, elapsed, n_new
 
 
