@@ -1,7 +1,9 @@
 # PRD-001: Kernel AI
 
-**Status:** Product shell shipped and deployed; first real training run of
-the from-scratch model in progress at time of writing.
+**Status:** Product shell shipped and deployed; first real training run on
+Kaggle completed — val_loss 10.08 → 2.27 over 6,000 steps, confirmed real
+(not a smoke test). Serving swap blocked on a confirmed Cloudflare Workers
+free-tier platform limit (10ms CPU/request — see R8, Open items).
 
 ## Problem
 
@@ -61,9 +63,9 @@ satisfies the actual goal.
 | R5 | Model is trained from random init, not fine-tuned from an existing pretrained model | ✅ by construction (`model.py` is a from-scratch architecture, Kaggle run starts from fresh weights) |
 | R6 | No hosted model ever answers a real user message | ✅ enforced by architecture (ARD-002) — chat endpoint serves exclusively from our checkpoint |
 | R7 | Training data includes broad, real, free English/code/reasoning sources, not just Kernel-language content | ✅ shipped (ARD-005) — 110,187-example merged corpus |
-| R8 | $0 serving cost at low traffic | ✅ Cloudflare Workers scale-to-zero (known tradeoff: probabilistic cold-start 503s, accepted — ARD-003) |
+| R8 | $0 serving cost at low traffic | ⚠️ blocked — Cloudflare Workers Free caps CPU time at **10ms/request** (confirmed via `wrangler tail`, real error: "Worker exceeded CPU time limit"), not a probabilistic cold-start issue as ARD-003 originally guessed but a hard platform wall too small for any real model forward pass. Decision pending with en (pay $5/mo Workers Paid for 30s-5min CPU/request, find another free host, or shrink the model further). |
 | R9 | $0 training cost | ✅ Kaggle free GPU quota, cardless (ARD-004) |
-| R10 | Real trained checkpoint, verified against a genuine training run (not a smoke test claimed as "done") | 🔄 in progress — first full 6,000-step run on Kaggle T4x2 |
+| R10 | Real trained checkpoint, verified against a genuine training run (not a smoke test claimed as "done") | ✅ shipped — 6,000 steps on Kaggle T4, val_loss 10.08 → 2.27, sample generations verified real (coherent English prose, structurally valid Kernel syntax, correct GSM8K answer-format though not yet reliably correct arithmetic) |
 
 ## User-facing architecture (what the user actually sees)
 
@@ -93,10 +95,20 @@ flowchart LR
 
 ## Open items at time of writing
 
-- First full training run (6,000 steps, dense 384d/8L/6h, Kaggle T4x2) is
-  in progress — real loss numbers and a sample generation are the next
-  concrete deliverable once it completes.
-- Swapping the product's chat endpoint from the hosted interim model
-  (`@cf/meta/llama-3.2-3b-instruct`) to the real trained checkpoint (via
-  the numpy serving path, RFC-004) is the integration step that follows
-  a successful training run.
+- First full training run complete: 6,000 steps, dense 384d/8L/6h, Kaggle
+  T4, ~46 min wall clock, val_loss 10.08 → 2.27. Sample generations
+  verified real (not cherry-picked): coherent English story continuations,
+  structurally valid Kernel syntax (correct indentation/nesting), and
+  correct GSM8K-style `<<...>>` answer formatting (arithmetic itself not
+  yet reliably correct — honestly reported, not glossed over).
+- Serving swap code is done (Worker updated to the real checkpoint, fp16
+  export verified against fp32 PyTorch reference, max diff 0.0077) but
+  **deployment is blocked**: Cloudflare Workers Free's 10ms CPU-time-per-
+  request limit is a hard wall, confirmed via live `wrangler tail`
+  ("Worker exceeded CPU time limit"), not something any amount of
+  optimization within free tier fixes for a real transformer forward
+  pass. Decision pending with en: pay the $5/mo Workers Paid minimum
+  (usage-based, not an idle VM — closest fit to en's standing infra
+  preference), try another free host for inference only, or shrink the
+  model further (real risk: still may not fit under 10ms, and hurts
+  quality either way).

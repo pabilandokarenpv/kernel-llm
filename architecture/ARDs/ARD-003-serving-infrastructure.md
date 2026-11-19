@@ -75,11 +75,23 @@ zip/pickle parsing overhead) and fetched from GitHub at request time
 
 ## Consequences
 
-- Serving is genuinely free/scale-to-zero, matching infra preference.
-- Known, accepted limitation: cold-start CPU budget (numpy + httpx import
-  + first fetch) sits right at the edge of the free Worker's 10ms CPU
-  budget, causing **probabilistic 503s on cold edges** — not fixed, and
-  not going to be unless the model shrinks further or the plan is
-  upgraded; explicitly accepted rather than silently left broken.
+- Serving is genuinely free/scale-to-zero, matching infra preference —
+  for placeholder-sized checkpoints only (see below, now confirmed false
+  for the real model).
+- **Confirmed, not just probabilistic**: once the real checkpoint (384d/
+  8L/6h, 33M params, replacing the earlier 192d/3L/4h placeholder) was
+  wired in and deployed, every single request hit Cloudflare's **10ms
+  CPU-time-per-request Free-tier wall** — verified via live `wrangler
+  tail`, real error `Worker exceeded CPU time limit`, not a cold-start
+  edge case. This is a hard platform limit (10ms is far too small for any
+  real transformer forward pass, not a tuning problem) — superseding the
+  earlier "probabilistic 503s" framing below, which was accurate for the
+  smaller placeholder checkpoint but doesn't describe what happens with a
+  model actually worth serving. Decision on how to proceed (pay for
+  Workers Paid, find another free inference host, or shrink the model) is
+  pending with en — see PRD-001's Open items.
+- (Historical, placeholder-checkpoint-era) cold-start CPU budget (numpy +
+  httpx import + first fetch) sat right at the edge of the free Worker's
+  10ms budget, causing probabilistic 503s on cold edges.
 - MoE is now a hard non-option for serving (static-graph requirement —
   see ARD-001), locking that decision in beyond just "nice to have."
