@@ -93,3 +93,25 @@ def forward(input_ids, w, n_layers, n_heads, max_seq_len):
     x = rms_norm(x, w["norm_f.weight"])
     logits = x @ w["head.weight"].T
     return logits
+
+
+def generate(input_ids, w, n_layers, n_heads, max_seq_len, max_new_tokens=40,
+             temperature=0.8, eos_id=None, rng=None):
+    """Naive autoregressive generation: re-runs the full forward pass each
+    step (no KV cache — the model is small enough that this is still fast,
+    and it keeps numpy_forward.py's core `forward()` simple/verified).
+    input_ids: (1, T) int array. Returns the full extended token list."""
+    rng = rng or np.random.default_rng()
+    ids = list(input_ids[0])
+    for _ in range(max_new_tokens):
+        if len(ids) >= max_seq_len:
+            break
+        cur = np.array([ids], dtype=np.int64)
+        logits = forward(cur, w, n_layers, n_heads, max_seq_len)
+        next_logits = logits[0, -1] / max(temperature, 1e-6)
+        probs = softmax(next_logits[None, :], axis=-1)[0]
+        next_id = int(rng.choice(len(probs), p=probs))
+        ids.append(next_id)
+        if eos_id is not None and next_id == eos_id:
+            break
+    return ids
