@@ -61,7 +61,14 @@ def generate_reply(message, history, max_new_tokens, temperature):
     )
     elapsed = time.time() - t0
     text = tok.decode(out_ids)
-    meta = f"\n\n<span class='gen-meta'>{elapsed:.1f}s · {len(out_ids) - len(ids)} tokens</span>"
+    n_new = len(out_ids) - len(ids)
+    return text, elapsed, n_new
+
+
+def generate_reply_html(message, history, max_new_tokens, temperature):
+    """Gradio UI variant: text + a small HTML meta footer."""
+    text, elapsed, n_new = generate_reply(message, history, max_new_tokens, temperature)
+    meta = f"\n\n<span class='gen-meta'>{elapsed:.1f}s · {n_new} tokens</span>"
     return text + meta
 
 
@@ -164,7 +171,7 @@ with gr.Blocks(title="Kernel AI") as demo:
             user_message = "".join(
                 p if isinstance(p, str) else p.get("text", "") for p in user_message
             )
-        reply = generate_reply(user_message, history, max_new_tokens, temperature)
+        reply = generate_reply_html(user_message, history, max_new_tokens, temperature)
         history.append({"role": "assistant", "content": reply})
         return history
 
@@ -176,5 +183,26 @@ with gr.Blocks(title="Kernel AI") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False,
-                 css=CSS, theme=gr.themes.Base(primary_hue="neutral", neutral_hue="neutral"))
+    import fastapi
+    import uvicorn
+
+    api = fastapi.FastAPI()
+
+    @api.post("/api/generate")
+    async def api_generate(req: fastapi.Request):
+        """Clean JSON API for other frontends (Slate) to call directly,
+        alongside this file's own Gradio UI — same model, same weights,
+        just a plain request/response contract instead of Gradio's
+        call/poll protocol. {"messages": [{"role", "content"}, ...]} in,
+        {"text": "..."} out."""
+        body = await req.json()
+        messages = body.get("messages", [])
+        last_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        mnt = int(body.get("max_new_tokens", 60))
+        temp = float(body.get("temperature", 0.8))
+        text, elapsed, n_new = generate_reply(last_user, [], mnt, temp)
+        return {"text": text, "elapsed_s": round(elapsed, 2), "tokens": n_new}
+
+    app = gr.mount_gradio_app(api, demo, path="/", css=CSS,
+                               theme=gr.themes.Base(primary_hue="neutral", neutral_hue="neutral"))
+    uvicorn.run(app, host="0.0.0.0", port=7860)
