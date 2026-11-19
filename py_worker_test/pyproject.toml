@@ -1,0 +1,15 @@
+[project]
+name = "kernel-ai-py-test"
+version = "0.1.0"
+description = "proving numpy inference works in a Cloudflare Python Worker"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy",
+    "httpx"
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk"
+]

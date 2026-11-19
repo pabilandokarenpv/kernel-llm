@@ -1,0 +1,6 @@
+{
+  "name": "kernel-ai-py-test",
+  "main": "src/entry.py",
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["python_workers"]
+}
