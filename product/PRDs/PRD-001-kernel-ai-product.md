@@ -1,10 +1,10 @@
 # PRD-001: Kernel AI
 
-**Status:** Product shell shipped and deployed; first real training run on
-Kaggle completed — val_loss 10.08 → 2.27 over 6,000 steps, confirmed real
-(not a smoke test). Serving is live at
-https://kernel-ai.forgirlswhobuild.com/ via a Cloudflare Tunnel, $0
-cost, verified end-to-end with a real generation through the public URL.
+**Status:** Product shell (Slate) shipped and deployed; first real training
+run on Kaggle completed — val_loss 10.08 → 2.27 over 6,000 steps, confirmed
+real (not a smoke test). Slate's chat is now wired to the real checkpoint
+(no more placeholder) via a Cloudflare Tunnel, $0 cost, verified end-to-end
+with a real generation through the live product.
 
 ## Problem
 
@@ -62,7 +62,7 @@ satisfies the actual goal.
 | R3 | Kernel Code panel (runs/displays Kernel-language code) | ✅ shipped |
 | R4 | Responsive across desktop / tablet / phone | ✅ shipped, verified at 3 breakpoints |
 | R5 | Model is trained from random init, not fine-tuned from an existing pretrained model | ✅ by construction (`model.py` is a from-scratch architecture, Kaggle run starts from fresh weights) |
-| R6 | No hosted model ever answers a real user message | ✅ enforced by architecture (ARD-002) — chat endpoint serves exclusively from our checkpoint |
+| R6 | No hosted model ever answers a real user message | ✅ now genuinely true — Slate's `/api/chat` calls our own checkpoint via the Cloudflare Tunnel; previously true only vacuously (a placeholder that answered nothing real), now backed by real generation |
 | R7 | Training data includes broad, real, free English/code/reasoning sources, not just Kernel-language content | ✅ shipped (ARD-005) — 110,187-example merged corpus |
 | R8 | $0 serving cost at low traffic | ✅ shipped — Cloudflare Tunnel to a persistent process, genuinely $0, no card, no per-request CPU-time wall (that specific wall killed the Workers-only path — see ARD-003). Live at https://kernel-ai.forgirlswhobuild.com/, verified end-to-end via `gradio_client` against the real public URL. |
 | R9 | $0 training cost | ✅ Kaggle free GPU quota, cardless (ARD-004) |
@@ -72,11 +72,12 @@ satisfies the actual goal.
 
 ```mermaid
 flowchart LR
-    USER(("User")) --> UI["Kernel AI chat UI\n(sessions sidebar)"]
+    USER(("User")) --> UI["Slate chat UI\nsessions sidebar"]
     UI --> MSG["message"]
-    MSG --> PANEL1["Artifact panel\n(renders generated artifacts)"]
-    MSG --> PANEL2["Kernel Code panel\n(Kernel-language code output)"]
-    MSG -.->|"served by"| MODEL["our own trained model\n(never a hosted API)"]
+    MSG --> PANEL1["Artifact panel\nrenders generated artifacts"]
+    MSG --> PANEL2["Kernel Code panel\nKernel-language code output"]
+    MSG -->|"/api/chat"| WORKER["Slate's Cloudflare Worker\nproxies, doesn't compute"]
+    WORKER -->|"Cloudflare Tunnel"| MODEL["our own trained model\nnever a hosted API"]
 
     style MODEL fill:#1a4a2e,stroke:#2a8,color:#fff
 ```
@@ -90,9 +91,13 @@ flowchart LR
   evidence.
 - Loss curve from a real training run (not a CPU smoke test) demonstrating
   the model is actually learning on the full merged corpus.
-- The product (Kernel AI / Slate) remains live and responsive at
-  https://slate.pabilando-karenpv.workers.dev once the trained checkpoint
-  replaces the current hosted-model interim.
+- The product (Slate, aka Kernel AI) is live and responsive at
+  https://slate.pabilando-karenpv.workers.dev — chat, sidebar/sessions,
+  Artifact panel, Kernel Code panel, and now a real backend: the
+  trained checkpoint, not the hosted-model interim. Verified via browser
+  automation: opened the sidebar, sent a real message, watched a real
+  generated response stream in ("Once upon a time there was a small
+  girl named Jo...").
 
 ## Open items at time of writing
 
@@ -102,15 +107,22 @@ flowchart LR
   structurally valid Kernel syntax (correct indentation/nesting), and
   correct GSM8K-style `<<...>>` answer formatting (arithmetic itself not
   yet reliably correct — honestly reported, not glossed over).
-- **Serving is live**: https://kernel-ai.forgirlswhobuild.com/ — a
-  Cloudflare Tunnel (genuinely $0, no card, no per-request CPU-time wall
-  since compute runs on real persistent infrastructure rather than inside
-  a Worker) pointed at a Gradio app running the real checkpoint via the
-  same pure-numpy forward pass built for the abandoned Workers path.
-  Verified end-to-end through the actual public URL via `gradio_client`,
-  not just "the page loads": real generation, real response, 7.7s for 25
-  tokens. This is what actually shipped, after both of the other two
-  serving paths considered turned out to be paid-only:
+- **Serving is live, now wired into the real product**: Slate
+  (https://slate.pabilando-karenpv.workers.dev) is the actual chat
+  UI — sidebar, sessions, Artifact panel, Kernel Code panel, all of
+  which were already built and are not a separate demo. Its
+  `/api/chat` Worker proxies to
+  https://kernel-ai.forgirlswhobuild.com/api/generate, a Cloudflare
+  Tunnel (genuinely $0, no card, no per-request CPU-time wall since
+  compute runs on real persistent infrastructure rather than inside a
+  Worker) pointed at the real checkpoint via the same pure-numpy
+  forward pass built for the abandoned Workers path. A standalone
+  Gradio demo at the tunnel's root URL still exists too (useful for
+  direct testing without going through Slate), but Slate is the actual
+  product surface. Verified end-to-end through the live Slate UI via
+  browser automation: real message sent, real generated response
+  streamed back. This is what actually shipped, after both of the
+  other two serving paths considered turned out to be paid-only:
   - Cloudflare Workers Free: confirmed hard 10ms CPU-time/request wall
     (see ARD-003's earlier revisions) — would need Workers Paid, $5/mo.
   - HF Spaces: confirmed (real 402 error, not a guess) that hosting any
