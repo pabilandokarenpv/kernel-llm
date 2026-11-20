@@ -15,7 +15,11 @@ settings gear, "Use via API", the sliders panel) is hidden via CSS so the
 only thing visible is the chat itself.
 """
 import json
+import os
+import re
 import time
+import urllib.error
+import urllib.request
 
 import gradio as gr
 import numpy as np
@@ -26,6 +30,34 @@ from bpe_tokenizer import ByteLevelBPE
 CKPT_PATH = "kernel_ai_v1.raw"
 TOKENIZER_PATH = "kernel_ai_final_tokenizer.json"
 N_LAYERS, N_HEADS, SEQ_LEN = 8, 6, 256
+
+# Real web search, gated behind a free (no card) Tavily API key -- set
+# TAVILY_API_KEY as an env var to enable it. If unset, the model still
+# emits "### Search:\n{query}" when it decides a question needs grounding
+# (that's a trained behavior, not search-dependent), but there's no real
+# search backend to call, so that path falls back to answering directly
+# instead of returning a search query as if it were an answer.
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+
+
+def tavily_search(query: str) -> str | None:
+    if not TAVILY_API_KEY:
+        return None
+    try:
+        req = urllib.request.Request(
+            "https://api.tavily.com/search",
+            data=json.dumps(
+                {"api_key": TAVILY_API_KEY, "query": query, "max_results": 3, "search_depth": "basic"}
+            ).encode(),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        snippets = [r.get("content", "") for r in data.get("results", [])][:3]
+        return "\n".join(s[:400] for s in snippets if s) or None
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return None
 
 print("loading tokenizer...")
 tok = ByteLevelBPE(TOKENIZER_PATH)
@@ -58,12 +90,19 @@ EOS_ID = 4  # <|endoftext|> -- the document separator every training source used
             # generation running straight through a document boundary)
 
 
-def generate_reply(message, history, max_new_tokens, temperature):
+def generate_reply(message, history, max_new_tokens, temperature, system=None):
     # The training corpus is entirely "### Instruction:\n{msg}\n\n### Response:\n{reply}"
     # (see data/build_final_corpus.py) -- prompting in that exact format,
     # not the raw message, is what the model actually learned to complete
     # coherently; feeding it bare text was a prompt/training-format mismatch.
-    prompt = f"### Instruction:\n{message}\n\n### Response:\n"
+    # Some Dolly-sourced examples in the corpus used a 3-part
+    # "### Context:\n...\n\n### Instruction:\n...\n\n### Response:\n" form too,
+    # so a bot/project's custom instructions are passed as that Context
+    # section rather than a format the model has never seen.
+    if system:
+        prompt = f"### Context:\n{system}\n\n### Instruction:\n{message}\n\n### Response:\n"
+    else:
+        prompt = f"### Instruction:\n{message}\n\n### Response:\n"
     ids = tok.encode(prompt)
     input_ids = np.array([ids], dtype=np.int64)
     rng = np.random.default_rng()
@@ -79,13 +118,76 @@ def generate_reply(message, history, max_new_tokens, temperature):
         completion_ids = completion_ids[:-1]
     text = tok.decode(completion_ids).strip()
     n_new = len(completion_ids)
-    return text, elapsed, n_new
+    return text, elapsed, n_new, False, None
+
+
+def generate_with_search(message, max_new_tokens, temperature, system=None, allow_search=True):
+    """Two-phase generation implementing the real search-tool pattern the
+    corpus was trained on (see MS MARCO's "### Search:\n{query}\n\n###
+    Search Results:\n{passage}\n\n### Response:" examples in
+    data/build_final_corpus.py). Phase 1 lets the MODEL itself decide
+    whether a question needs grounding -- it's not forced down either
+    path by the prompt. If it emits a "### Search:" section, phase 2
+    throws away whatever the model made up as "results" (it has no real
+    web access, those tokens are just pattern-completion) and replaces
+    them with REAL Tavily results before generating the actual answer.
+    No existing AI model is involved anywhere in this -- Tavily is a
+    search/retrieval API, not a generative model answering the user.
+    """
+    if not allow_search or not TAVILY_API_KEY:
+        text, elapsed, n_new, _, _ = generate_reply(message, [], max_new_tokens, temperature, system)
+        return text, elapsed, n_new, False, None
+
+    base_prompt = (f"### Context:\n{system}\n\n### Instruction:\n{message}\n\n" if system
+                   else f"### Instruction:\n{message}\n\n")
+    ids = tok.encode(base_prompt)
+    rng = np.random.default_rng()
+    t0 = time.time()
+    # Generous budget: covers either a direct "### Response:\n..." or a
+    # full "### Search:\n{q}\n\n### Search Results:\n...### Response:\n..."
+    probe_tokens = max(int(max_new_tokens) + 40, 120)
+    out_ids = generate(
+        np.array([ids], dtype=np.int64), w, N_LAYERS, N_HEADS, SEQ_LEN,
+        max_new_tokens=probe_tokens, temperature=float(temperature), rng=rng, eos_id=EOS_ID,
+    )
+    completion_ids = out_ids[len(ids):]
+    if completion_ids and completion_ids[-1] == EOS_ID:
+        completion_ids = completion_ids[:-1]
+    raw_text = tok.decode(completion_ids)
+
+    search_match = re.match(r"\s*###\s*Search:\s*\n(.+?)\n\n", raw_text, re.S)
+    if search_match:
+        query = search_match.group(1).strip()[:200]
+        real_results = tavily_search(query)
+        if real_results:
+            full_prompt = base_prompt + f"### Search:\n{query}\n\n### Search Results:\n{real_results}\n\n### Response:\n"
+            ids2 = tok.encode(full_prompt)
+            out_ids2 = generate(
+                np.array([ids2], dtype=np.int64), w, N_LAYERS, N_HEADS, SEQ_LEN,
+                max_new_tokens=int(max_new_tokens), temperature=float(temperature), rng=rng, eos_id=EOS_ID,
+            )
+            comp2 = out_ids2[len(ids2):]
+            if comp2 and comp2[-1] == EOS_ID:
+                comp2 = comp2[:-1]
+            answer = tok.decode(comp2).strip()
+            elapsed = time.time() - t0
+            return answer, elapsed, len(comp2), True, query
+        # Tavily unavailable/failed -- fall back to a direct answer instead
+        # of surfacing the model's made-up "results" as if they were real.
+        text, elapsed, n_new, _, _ = generate_reply(message, [], max_new_tokens, temperature, system)
+        return text, elapsed, n_new, False, None
+
+    resp_match = re.search(r"###\s*Response:\s*\n(.*)", raw_text, re.S)
+    answer = resp_match.group(1).strip() if resp_match else raw_text.strip()
+    elapsed = time.time() - t0
+    return answer, elapsed, len(completion_ids), False, None
 
 
 def generate_reply_html(message, history, max_new_tokens, temperature):
     """Gradio UI variant: text + a small HTML meta footer."""
-    text, elapsed, n_new = generate_reply(message, history, max_new_tokens, temperature)
-    meta = f"\n\n<span class='gen-meta'>{elapsed:.1f}s · {n_new} tokens</span>"
+    text, elapsed, n_new, used_search, query = generate_with_search(message, max_new_tokens, temperature)
+    search_note = f" · searched: \u201c{query}\u201d" if used_search else ""
+    meta = f"\n\n<span class='gen-meta'>{elapsed:.1f}s · {n_new} tokens{search_note}</span>"
     return text + meta
 
 
@@ -215,10 +317,17 @@ if __name__ == "__main__":
         body = await req.json()
         messages = body.get("messages", [])
         last_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        system = body.get("system") or next((m["content"] for m in messages if m.get("role") == "system"), None)
         mnt = int(body.get("max_new_tokens", 60))
         temp = float(body.get("temperature", 0.8))
-        text, elapsed, n_new = generate_reply(last_user, [], mnt, temp)
-        return {"text": text, "elapsed_s": round(elapsed, 2), "tokens": n_new}
+        allow_search = body.get("allow_search", True)
+        text, elapsed, n_new, used_search, query = generate_with_search(
+            last_user, mnt, temp, system=system, allow_search=allow_search
+        )
+        return {
+            "text": text, "elapsed_s": round(elapsed, 2), "tokens": n_new,
+            "used_search": used_search, "search_query": query,
+        }
 
     app = gr.mount_gradio_app(api, demo, path="/", css=CSS,
                                theme=gr.themes.Base(primary_hue="neutral", neutral_hue="neutral"))

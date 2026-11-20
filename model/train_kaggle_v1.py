@@ -37,8 +37,14 @@ OUT_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 D_MODEL, N_LAYERS, N_HEADS = 384, 8, 6
 SEQ_LEN = 256
 BATCH_SIZE = 24
-TOTAL_STEPS = 6000
-CHECKPOINT_EVERY = 500
+# 4x the previous run (6000 -> 24000): same architecture/corpus size (~98MB,
+# ~0.5s/step observed last run) so this is ~3.3hrs wall clock on a T4,
+# comfortably inside one Kaggle session -- more passes over a corpus that's
+# now also better-balanced (less TinyStories, real human chit-chat added)
+# should move val_loss meaningfully past the 2.27 the last run reached,
+# since loss was still dropping at step 6000, not plateaued.
+TOTAL_STEPS = 24000
+CHECKPOINT_EVERY = 2000
 LR_MUON = 0.02
 LR_ADAMW = 3e-4
 

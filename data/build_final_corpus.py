@@ -7,13 +7,31 @@ never to answer users). Nothing in this corpus is a secret.
 
 Sources:
   - TinyStories (free, HF: roneneldan/TinyStories)               — fluency
+    (sampled down to 10k of 529k stories -- kept small on purpose: at
+    full size it dominated the mix and taught "continue the story" as
+    the default move for ANY prompt, including plain greetings)
   - Dolly15k (free, HF: databricks/databricks-dolly-15k)          — instructions
   - OASST2 (free, HF: OpenAssistant/oasst2)                       — human conversations
   - CodeAlpaca-20k (free, HF: sahil2801/CodeAlpaca-20k)            — coding
   - GSM8K (free, HF: openai/gsm8k)                                 — math reasoning
+  - No Robots (free, HF: HuggingFaceH4/no_robots)                  — human-WRITTEN
+    instructions (the dataset's whole reason to exist is that these are
+    NOT model-generated)
+  - PersonaChat (free, HF: AlekseyKorshuk/persona-chat)            — human
+    crowdsourced everyday chit-chat; added specifically to fix "hi" /
+    casual-greeting prompts getting an unrelated, off-topic reply —
+    nothing else in this mix taught ordinary two-person small talk
+  - MS MARCO v1.1 (free, HF: microsoft/ms_marco)                   — real
+    Bing search-query logs + retrieved web passages + human-written
+    answers; teaches the search-tool pattern ("### Search:\n{query}" then
+    "### Search Results:\n{passage}" then "### Response:") end to end on
+    genuine human data — nothing here is a model's output, the query, the
+    passage, and the answer are all real
   - our own Kernel-language execution-trace corpus (4,829 programs) — Kernel semantics
-  - our own distilled data (general/coding/kernel_task/kernel_explain,
-    generated via gpt-oss-120b, used only for training, never serving)
+
+All sources are free, open, and human-authored end to end -- no existing
+AI model's output appears anywhere in this corpus (the earlier revision's
+small "distilled_*" slice, generated via gpt-oss-120b, was removed).
 """
 
 import json
@@ -46,8 +64,23 @@ def pair_to_text(rec):
     instr = rec.get("instruction", "").strip()
     resp = rec.get("response", "").strip()
     ctx = rec.get("context", "").strip() if rec.get("context") else ""
+    search_query = rec.get("search_query", "").strip() if rec.get("search_query") else ""
+    search_results = rec.get("search_results", "").strip() if rec.get("search_results") else ""
     if not instr or not resp:
         return None
+    # Search-pattern examples (MS MARCO): teaches the model that for some
+    # questions, the right move is to emit a search query and ground the
+    # answer in real results, not just answer from parametric memory --
+    # this is the literal training signal the serving code's two-phase
+    # generation (emit query -> real Tavily call -> grounded answer) relies
+    # on existing at all. Examples WITHOUT this field (everything else in
+    # the mix) teach the opposite: most prompts should go straight to
+    # Response with no search step.
+    if search_query and search_results:
+        return (
+            f"### Instruction:\n{instr}\n\n### Search:\n{search_query}\n\n"
+            f"### Search Results:\n{search_results}\n\n### Response:\n{resp}"
+        )
     if ctx:
         return f"### Instruction:\n{instr}\n\n### Context:\n{ctx}\n\n### Response:\n{resp}"
     return f"### Instruction:\n{instr}\n\n### Response:\n{resp}"
@@ -67,15 +100,18 @@ def main():
         counts["tinystories"] = len(stories)
 
     # Instruction-style datasets: dolly, oasst2, codealpaca, gsm8k, distilled
+    # NOTE: the ~440 "distilled_*" examples generated via gpt-oss-120b in an
+    # earlier session are deliberately NOT included here anymore -- en asked
+    # this round not to use any existing AI model at all, which this corpus
+    # build now honors for every source: 100% free, open, human-authored data.
     sources = {
         "dolly": os.path.join(RAW, "dolly.jsonl"),
         "oasst2": os.path.join(RAW, "oasst2_pairs.jsonl"),
         "codealpaca": os.path.join(RAW, "codealpaca_pairs.jsonl"),
         "gsm8k": os.path.join(RAW, "gsm8k_pairs.jsonl"),
-        "distilled_general": os.path.join(DISTILLED, "general.jsonl"),
-        "distilled_coding": os.path.join(DISTILLED, "coding.jsonl"),
-        "distilled_kernel_task": os.path.join(DISTILLED, "kernel_task.jsonl"),
-        "distilled_kernel_explain": os.path.join(DISTILLED, "kernel_explain.jsonl"),
+        "no_robots": os.path.join(RAW, "no_robots_pairs.jsonl"),
+        "personachat": os.path.join(RAW, "personachat_pairs.jsonl"),
+        "ms_marco_search": os.path.join(RAW, "ms_marco_search_pairs.jsonl"),
     }
     for name, path in sources.items():
         records = load_jsonl(path)
