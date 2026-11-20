@@ -122,6 +122,19 @@ flowchart TB
     style PRODUCT fill:#3a1a1a,stroke:#a44,color:#fff
 ```
 
+**Walkthrough — read this left to right, top to bottom:**
+
+The diagram has six colored zones, and data flows through them in order, like a factory line:
+
+1. **📚 Data pipeline (green)** — two different kinds of input come together here. The free open datasets (left box) are things other people/organizations built; our own Kernel-lang execution traces (right box) come from running our own programming language's interpreter. A single script, `build_final_corpus.py`, reads all of it and merges it into one 277MB text file — this file is the *only* thing training ever sees.
+2. **🔤 Tokenization (blue)** — before that text file can be used, it has to pass through the tokenizer, which turns text into numbers. Notice the tokenizer box sits between data and training *and* has a second connection (dotted line) all the way over to the serving box — that's because the exact same tokenizer has to be used both when training the model and later when running it, otherwise the numbers wouldn't mean the same thing.
+3. **🏋️ Training (orange)** — the corpus and tokenizer both get mounted into a Kaggle training run. The model (33M parameters) runs through the data for 55,000 steps, with the Muon+AdamW optimizers doing the actual weight-nudging. Out the other end comes `kernel_ai_v1_final.pt` — a frozen snapshot of every trained number.
+4. **📦 Export (purple)** — that PyTorch checkpoint gets converted into a smaller, framework-independent format (fp16 `.raw` file) — this is the bridge between "trained on a GPU with PyTorch" and "served anywhere with just NumPy."
+5. **🖥️ Serving (teal)** — the exported checkpoint loads into `numpy_forward.py`, wrapped by a FastAPI service. When a question needs real facts, that service can reach out to Tavily (dotted line, "if model decides to search") — this is the only place anything outside our own trained weights touches the answer, and it's pure search, not another AI model. A Cloudflare Tunnel gives this whole thing a public address.
+6. **🌐 Product (red)** — this is what you actually see: a website built in React, backed by a Cloudflare Worker that either talks to Workers KV (for saved Cron Jobs) or forwards your chat message over HTTPS, through the tunnel, down into the serving layer.
+
+Follow the arrow from **👤 User** at the bottom-left: you talk to the React frontend, which talks to the Worker, which reaches through the tunnel into the actual model. Everything to the right of "SERVING" only exists because of everything built in the four boxes to its left.
+
 ---
 
 ## 4. Glossary — Every Term Used, Defined
@@ -250,6 +263,8 @@ flowchart LR
     instruction --> CORPUS
 ```
 
+**Walkthrough**: this diagram is really just a bar chart in disguise, grouped into two families. The left group (TinyStories through C4) is text with *no* question/answer structure — the model just reads it as flowing prose to learn grammar, facts, and different writing styles. The right group (Dolly through Kernel execution traces) is all in the Instruction→Response shape described below. Both groups funnel into the same final corpus file — the model doesn't "know" which group a given example came from, it just sees more of this pattern or more of that one. The relative *size* of each box matters more than it might look: OASST2 (34,789) and C4 (39,440) are the two largest single contributors, so they have outsized influence on the model's general "voice," which is part of why PersonaChat (casual chat) and MS MARCO (search behavior) were added deliberately in smaller, targeted amounts — to steer specific behaviors without being overwhelmed by the bigger, more generic sources.
+
 | Source | Count | Purpose |
 |---|---|---|
 | TinyStories | 9,999 | Basic fluency/grammar — deliberately capped small; at full size it dominated and made the model default to "continue the story" for every prompt, including greetings |
@@ -317,6 +332,8 @@ flowchart LR
     E --> V["vectors (one per token)<br/>— what the model actually computes with"]
 ```
 
+**Walkthrough**: read this as four stations on a conveyor belt. Raw text comes in on the left. The tokenizer doesn't understand English — it's just pattern-matching against its learned vocabulary of 24,576 chunks, so `'hello there'` becomes a short list of integers (the exact numbers shown are illustrative). Those integers aren't meaningful to the neural network either, on their own — an integer like 1847 doesn't encode any sense of "hello-ness." That's what the embedding table (far right) does: it's a lookup table, literally one row of 384 numbers per vocabulary entry, and *those* rows are what actually flow through the Transformer's math. This whole left-to-right chain happens every single time, both when training AND when answering a live question — it's the universal first step.
+
 - **Algorithm**: Byte-level Byte-Pair Encoding (BPE)
 - **Vocabulary size**: 24,576 tokens
 - **Trained on**: our own corpus (not reused from GPT, Claude, or any other model)
@@ -354,7 +371,7 @@ flowchart TB
     ADD2 --> OUT["output vector,<br/>passed to next layer"]
 ```
 
-This exact block repeats **8 times**. After the last block, one more RMSNorm is applied, then a final linear layer ("the head") converts the result into a probability for every one of the 24,576 possible next tokens.
+**Walkthrough**: this is the single repeating unit that, stacked 8 times, makes up the entire model — understanding this one diagram means understanding the whole architecture. Each token's vector flows in at the top. It gets normalized (RMSNorm), then passed through self-attention, where it "looks at" every earlier token in the sequence to gather context (this is where RoPE tells it *where* each token is, and QK-Norm keeps the math stable). The dotted line labeled "residual connection" is important: the ORIGINAL input gets added back on top of the attention's output (the "+" circle) — this means the layer only has to learn a *correction* to add, not reconstruct the whole signal from scratch, which is a big part of why deep networks like this are trainable at all. The same pattern repeats for the second half: normalize, run through the SwiGLU feedforward network (which processes each token independently, no longer looking at other tokens), add the residual back. What comes out the bottom becomes the input to the next identical block. After block 8, one final RMSNorm and a linear layer turn the result into a probability for every possible next token.
 
 ### 7.3 The specific design choices, and why
 
@@ -400,6 +417,8 @@ sequenceDiagram
     Note over Model: after 55,000 steps,<br/>save final checkpoint
 ```
 
+**Walkthrough**: this is a sequence diagram — time flows downward, and each arrow is one message between the four participants. The `loop` box means this entire sequence repeats, once per training step, 55,000 times over. Read it as: the corpus hands the model a small batch (24 sequences); the model makes its best guess at the next token for every position in that batch (this is "the forward pass"); those guesses get compared against what the actual next tokens really were, producing one loss number; that loss number tells the optimizers how wrong things were; the optimizers then reach back and adjust every single one of the model's 33 million weights by a tiny amount in the direction that would've made this batch's guesses less wrong. Step 1 of 55,000 starts with a model that's basically random noise; by step 55,000, those repeated tiny nudges have shaped it into something that can hold a conversation. No individual step teaches it much — it's the sheer repetition that matters.
+
 ### 8.2 Optimizers
 
 We split parameters between two different optimizers — a known effective technique (from the "modded-nanogpt" community/convention):
@@ -423,7 +442,7 @@ flowchart TB
     H --> J["Commit + push to GitHub"]
 ```
 
-Training was run in rounds, each adding more data and more steps as the corpus grew — see [Version History](#13-version-history).
+**Walkthrough**: this is the automation loop that ran unattended, including overnight, for every training round. Starting top-left: once a corpus is built locally, it gets uploaded to Kaggle as a Dataset (not a regular git commit — GitHub rejects anything over 100MB, and our corpus is 277MB). A training kernel (Kaggle's term for a running script) gets pushed via their API, mounts that dataset, and starts using the free T4 GPU. From there, a monitor script I wrote checks in every 3 minutes without needing a human watching. Two branches out of that check: if the status comes back "complete," it automatically downloads the checkpoint and moves on to export/deploy/commit. If it comes back "error" instead, it automatically retries (re-pushing the same kernel) up to 3 times before giving up — this loop-back arrow (G → D) is the safety net that lets a multi-hour training run survive a transient failure without needing a person watching it the whole time.
 
 ### 8.4 A real engineering problem we hit and fixed
 
@@ -450,6 +469,8 @@ flowchart LR
     CF -->|"public HTTPS"| WORKER["Whitekernel's<br/>Cloudflare Worker"]
 ```
 
+**Walkthrough**: reading left to right, this shows two very different kinds of infrastructure stitched together. The left box ("persistent process") is a single, ordinary machine that never stops running — it loads the checkpoint once into memory, and every request after that just runs the numbers through `numpy_forward.py` and returns an answer. The arrow out of that box ("outbound only, no open port needed") is the key trick: that machine reaches *out* to Cloudflare through the tunnel, rather than Cloudflare reaching *in* to it — which is why it doesn't need a public IP address, a firewall rule, or any paid hosting. Cloudflare's own network then exposes that connection as a normal public HTTPS address, which is what the Worker (the actual website, on the far right) talks to. The practical effect: the model genuinely runs on a normal computer, but anyone on the internet can reach it through a real `https://` URL, for $0.
+
 - **`numpy_forward.py`** is a complete, independent reimplementation of the model's forward pass using only NumPy — no PyTorch required at serving time. It was verified **byte-for-byte identical** to the PyTorch version before being trusted in production.
 - **fp16 export**: the checkpoint is converted from 32-bit to 16-bit floating point, halving its size (66MB vs ~132MB), with precision loss verified to be negligible (max difference ~0.0077 vs the full-precision version).
 - **Cloudflare Tunnel** connects this always-on process to a real public URL without ever needing to open an inbound port, get a static IP, or pay for anything.
@@ -475,7 +496,7 @@ sequenceDiagram
     end
 ```
 
-The model was trained (via the MS MARCO data) to recognize when a question needs external grounding and emit a search query — the decision is the model's own, not hardcoded. Tavily is a pure retrieval API (returns ranked real web results, no AI-generated text) — so using it doesn't involve any existing AI model answering the user.
+**Walkthrough**: this diagram's `alt`/`else` box is the whole point — it shows a genuine fork in behavior, not a fixed script. "Model (phase 1)" generates its *first* attempt at a response, and whether that attempt starts with `### Search:` or jumps straight to an answer is entirely up to whatever the model itself learned to do for that specific question — nobody hardcoded a list of "questions that need search." If it did choose to search, notice the discarded step in the middle: the model's own phase-1 attempt at "search results" gets thrown away completely (it was never a real search, just the model pattern-matching what results usually look like) and replaced with Tavily's real, actual results before "Model (phase 2)" writes the real final answer. If it didn't choose to search, the whole middle branch is skipped and the first attempt simply is the answer. Either way, Tavily only ever returns raw search results — it never writes the user-facing answer itself.
 
 ---
 
@@ -498,6 +519,8 @@ flowchart TB
     W3 --> KV
     W1 -->|"HTTPS, via Cloudflare Tunnel"| MODEL["Our model server"]
 ```
+
+**Walkthrough**: the top box is everything you directly see and click on — the chat itself, plus three extra feature areas (Projects for grouping chats, Bots for custom personas, Cron Jobs for scheduled prompts, and a side panel for code/artifacts). None of that frontend code talks to the model directly; it only ever talks to "its own" Cloudflare Worker, which exposes three jobs: forwarding chat messages on to the real model server, reading/writing Cron Job data in Workers KV (a small database), and running on its own schedule (independent of any visitor) to check whether any Cron Jobs are due. Notice `/api/cron` and the `scheduled()` handler both point at the same KV store — that's what lets a job you create in the UI actually get picked up and run later, even if you've closed the tab entirely. Only `/api/chat` ever reaches outside Cloudflare's network, down into the actual model server from the previous diagram.
 
 - **React** — component-based UI (same category of tool Claude.ai/ChatGPT's own interfaces use)
 - **TypeScript** — adds a type system on top of JavaScript, used for both frontend and Worker code
@@ -536,6 +559,8 @@ sequenceDiagram
     Worker-->>React: Server-Sent Events (SSE)
     React-->>Browser: text renders live, word by word
 ```
+
+**Walkthrough**: this is the single most useful diagram if you want to trace "what actually happens when I hit send" — it ties together every other diagram in this document into one timeline. Your keystroke only ever reaches three things directly: the React app in your browser, which immediately hands off to the Worker. Everything from "Worker→Tunnel" onward is invisible to you and takes anywhere from under a second to several seconds depending on response length. The `opt` box in the middle is literally the same fork from the web-search diagram, just placed in context of the full round-trip — it's optional, and most requests skip it entirely. Notice the arrows going back up use a dashed line (`-->>`) instead of solid (`->>`) — in sequence-diagram convention that distinguishes a *response* flowing back from an *original request* flowing forward, which is a nice visual cue for "this is the reply, not a new request." The very last step, React rendering text "live, word by word," is why the chat feels like it's typing in real time — the server is actually streaming small chunks the whole way back, not sending one giant finished block at the end.
 
 ---
 
