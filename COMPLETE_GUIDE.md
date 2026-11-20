@@ -23,6 +23,8 @@ This document explains everything: what was built, why, how all the pieces fit t
 13. [Version History](#13-version-history)
 14. [Where Everything Lives (Repo Map)](#14-where-everything-lives-repo-map)
 15. [Honest Limitations](#15-honest-limitations)
+16. [The Math — Formulas and Computations](#16-the-math--formulas-and-computations)
+17. [Research References — Papers and Official Documentation](#17-research-references--papers-and-official-documentation)
 
 ---
 
@@ -646,3 +648,138 @@ Stated plainly, because pretending otherwise would defeat the purpose of this do
 - **Compute and data are, and will remain, orders of magnitude smaller** than what frontier labs use. This is a hard, permanent ceiling given the project's deliberate free-infrastructure constraint — not something more engineering effort alone fixes.
 
 None of this is hidden or glossed over anywhere else in this project's documentation — it's the same honesty standard applied throughout every ARD/RFC/PRD in this repo.
+
+---
+
+## 16. The Math — Formulas and Computations
+
+Every formula below is exactly what's implemented in `model/model.py` and `model/numpy_forward.py` — not a simplified textbook version. $x$ denotes a vector (one token's representation); $d$ is the model dimension (384 for us).
+
+### 16.1 Embedding lookup
+
+Each token ID $t$ is mapped to a vector by indexing into the embedding matrix $E \in \mathbb{R}^{V \times d}$ (vocab size $V{=}24{,}576$, $d{=}384$):
+
+$$x = E_t$$
+
+### 16.2 RMSNorm
+
+Given an input vector $x \in \mathbb{R}^d$ and a learned gain vector $g$:
+
+$$\mathrm{RMSNorm}(x)_i = \frac{x_i}{\mathrm{RMS}(x)} \cdot g_i, \qquad \mathrm{RMS}(x) = \sqrt{\frac{1}{d}\sum_{j=1}^{d} x_j^2 + \epsilon}$$
+
+($\epsilon{=}10^{-6}$, just to avoid dividing by zero.) Compare this to LayerNorm, which also subtracts the mean $\mu = \frac{1}{d}\sum x_j$ first — RMSNorm deliberately skips that step (see Zhang & Sennrich, 2019, cited below).
+
+### 16.3 RoPE (Rotary Position Embeddings)
+
+For a pair of dimensions $(x_{2i}, x_{2i+1})$ in a query or key vector at sequence position $m$, with rotation frequency $\theta_i = 10000^{-2i/d}$:
+
+$$\begin{pmatrix} x'_{2i} \\ x'_{2i+1} \end{pmatrix} = \begin{pmatrix} \cos(m\theta_i) & -\sin(m\theta_i) \\ \sin(m\theta_i) & \cos(m\theta_i) \end{pmatrix} \begin{pmatrix} x_{2i} \\ x_{2i+1} \end{pmatrix}$$
+
+This is applied to every adjacent pair of dimensions, for every query and key vector, before the attention dot-product — it's literally a 2D rotation, repeated $d/2$ times per vector, with each pair rotating at its own frequency. (Su et al., 2021, cited below.)
+
+### 16.4 Scaled dot-product attention
+
+Given query, key, value matrices $Q, K, V \in \mathbb{R}^{T \times d_h}$ (sequence length $T$, per-head dimension $d_h{=}64$ for us) and a causal mask $M$ (upper-triangular, filled with $-\infty$ above the diagonal):
+
+$$\mathrm{Attention}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_h}} + M\right)V$$
+
+where the softmax over a vector $z$ is $\mathrm{softmax}(z)_i = \dfrac{e^{z_i}}{\sum_j e^{z_j}}$ — this is what turns raw attention scores into weights that sum to 1 across every earlier position. We compute this independently for each of the 6 heads, then concatenate the results and apply one more linear projection. (Vaswani et al., 2017, cited below.)
+
+QK-Norm (Henry et al., 2020, cited below) applies RMSNorm to $Q$ and $K$ — per head, before the dot product — specifically to keep $QK^\top$ from growing to extreme magnitudes during training.
+
+### 16.5 SwiGLU feedforward
+
+With weight matrices $W_1, W_2 \in \mathbb{R}^{d \times d_{ff}}$ and $W_3 \in \mathbb{R}^{d_{ff} \times d}$ ($d_{ff}{=}1024$ for us), and $\mathrm{SiLU}(z) = z \cdot \sigma(z)$ (the sigmoid-weighted linear unit, also called Swish):
+
+$$\mathrm{SwiGLU}(x) = \big(\mathrm{SiLU}(xW_1) \odot (xW_2)\big)W_3$$
+
+$\odot$ is elementwise multiplication — this is the "gate": one projection ($xW_2$) controls how much of the other ($\mathrm{SiLU}(xW_1)$) actually passes through. (Shazeer, 2020, cited below.)
+
+### 16.6 Cross-entropy loss
+
+For a single training example, with the model's predicted probability distribution over the vocabulary $\hat{y}$ and the true next token's one-hot vector $y$:
+
+$$\mathcal{L} = -\sum_{i=1}^{V} y_i \log(\hat{y}_i) = -\log(\hat{y}_{\text{correct token}})$$
+
+In practice this simplifies to just the negative log-probability the model assigned to the *actual* next token — averaged across every position in the batch. This is the single number training tries to minimize.
+
+### 16.7 AdamW update rule
+
+For a parameter $\theta$ with gradient $g_t$ at step $t$, momentum terms $m_t, v_t$ (exponential moving averages of the gradient and its square), decay rates $\beta_1{=}0.9, \beta_2{=}0.999$, learning rate $\eta$, and weight decay $\lambda$:
+
+$$m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t, \qquad v_t = \beta_2 v_{t-1} + (1-\beta_2)g_t^2$$
+
+$$\hat{m}_t = \frac{m_t}{1-\beta_1^t}, \qquad \hat{v}_t = \frac{v_t}{1-\beta_2^t}$$
+
+$$\theta_t = \theta_{t-1} - \eta\left(\frac{\hat{m}_t}{\sqrt{\hat{v}_t}+\epsilon} + \lambda\theta_{t-1}\right)$$
+
+The key detail that makes this "AdamW" rather than plain "Adam": the $\lambda\theta_{t-1}$ weight-decay term is applied directly to the parameter update, separately from the gradient-based moment estimates — "decoupled" from the loss gradient (Loshchilov & Hutter, 2019, cited below), as opposed to folding decay into $g_t$ itself the way the original Adam (Kingma & Ba, 2015) did.
+
+### 16.8 Muon's orthogonalization step
+
+For a 2D weight matrix's gradient $G$, Muon first applies standard momentum, then approximately orthogonalizes it (pushes all of its singular values toward 1, keeping only its *direction* information) via a quintic Newton-Schulz iteration — repeated 5 times, with tuned constants $a{=}3.4445,\ b{=}{-}4.7750,\ c{=}2.0315$:
+
+$$X_0 = \frac{G}{\lVert G \rVert + \epsilon}, \qquad X_{k+1} = aX_k + \big(bA_k + cA_k^2\big)X_k, \quad \text{where } A_k = X_kX_k^\top$$
+
+After 5 iterations, $X_5$ approximates the orthogonalized update, which then gets scaled by $\max(1, p_{\text{rows}}/p_{\text{cols}})^{0.5}$ and subtracted from the weight. This avoids ever computing an exact (and far more expensive) singular value decomposition. (Jordan et al., 2024, cited below — note this is a blog post + reference implementation, not a traditional peer-reviewed paper; cited as such, not misrepresented as one.)
+
+### 16.9 Parameter count — the actual arithmetic
+
+Our model's 33,037,696 parameters, computed directly from the architecture (vocab $V{=}24{,}576$, model dim $d{=}384$, feedforward dim $d_{ff}{=}1024$, 8 layers):
+
+| Component | Formula | Count |
+|---|---|---|
+| Token embedding | $V \times d$ | $24{,}576 \times 384 = 9{,}437{,}184$ |
+| Per-layer attention (QKV + output proj + Q/K-norm) | $d \times 3d + d \times d + 2d_h$ | $442{,}368 + 147{,}456 + 128 = 589{,}952$ |
+| Per-layer norms (×2) | $2d$ | $768$ |
+| Per-layer SwiGLU (3 matrices) | $2(d \times d_{ff}) + (d_{ff} \times d)$ | $3 \times 393{,}216 = 1{,}179{,}648$ |
+| **Per layer total** | | $1{,}770{,}368$ |
+| **All 8 layers** | $8 \times 1{,}770{,}368$ | $14{,}162{,}944$ |
+| Final norm | $d$ | $384$ |
+| Output head | $d \times V$ | $9{,}437{,}184$ |
+| **Grand total** | | $\mathbf{33{,}037{,}696}$ |
+
+Notice the token embedding and the output head are each independently ~9.4M parameters — together they're over half the model's total size. This is a direct consequence of **not** tying the input and output embeddings together (a common optimization in some architectures that we deliberately didn't apply, for simplicity).
+
+---
+
+## 17. Research References — Papers and Official Documentation
+
+Every technique named in this document traces back to one of these. Research papers only — no blog posts or secondary articles, except where explicitly noted (Muon's introduction genuinely is a blog post + reference implementation, not a peer-reviewed paper, and is labeled as such rather than dressed up as one).
+
+### 17.1 Research papers
+
+| Technique | Paper | Authors | Venue / Year | Link |
+|---|---|---|---|---|
+| Transformer architecture | "Attention Is All You Need" | Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, Polosukhin | NeurIPS 2017 | [arXiv:1706.03762](https://arxiv.org/abs/1706.03762) |
+| RoPE (position encoding) | "RoFormer: Enhanced Transformer with Rotary Position Embedding" | Su, Lu, Pan, Murtadha, Wen, Liu | 2021 | [arXiv:2104.09864](https://arxiv.org/abs/2104.09864) |
+| RMSNorm | "Root Mean Square Layer Normalization" | Zhang, Sennrich | NeurIPS 2019 | [arXiv:1910.07467](https://arxiv.org/abs/1910.07467) |
+| QK-Norm | "Query-Key Normalization for Transformers" | Henry, Dachapally, Pawar, Chen | Findings of EMNLP 2020 | [arXiv:2010.04245](https://arxiv.org/abs/2010.04245) |
+| SwiGLU | "GLU Variants Improve Transformer" | Shazeer | 2020 | [arXiv:2002.05202](https://arxiv.org/abs/2002.05202) |
+| MoE (original) | "Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer" | Shazeer, Mirhoseini, Maziarz, Davis, Le, Hinton, Dean | ICLR 2017 | [arXiv:1701.06538](https://arxiv.org/abs/1701.06538) |
+| MoE (load-balancing, as used in our aux loss) | "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity" | Fedus, Zoph, Shazeer | JMLR 2022 | [arXiv:2101.03961](https://arxiv.org/abs/2101.03961) |
+| Muon optimizer | "Muon: An optimizer for hidden layers in neural networks" | Jordan, Jin, Boza, You, Cesista, Newhouse, Bernstein | Blog post + reference implementation, 2024 | [kellerjordan.github.io/posts/muon](https://kellerjordan.github.io/posts/muon/), [github.com/KellerJordan/modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| AdamW optimizer | "Decoupled Weight Decay Regularization" | Loshchilov, Hutter | ICLR 2019 | [arXiv:1711.05101](https://arxiv.org/abs/1711.05101) |
+| Adam optimizer | "Adam: A Method for Stochastic Optimization" | Kingma, Ba | ICLR 2015 | [arXiv:1412.6980](https://arxiv.org/abs/1412.6980) |
+| BPE tokenization (applied to NLP) | "Neural Machine Translation of Rare Words with Subword Units" | Sennrich, Haddow, Birch | ACL 2016 | [arXiv:1508.07909](https://arxiv.org/abs/1508.07909) |
+| Byte-level BPE (our tokenizer's exact variant) | "Language Models are Unsupervised Multitask Learners" (GPT-2) | Radford, Wu, Child, Luan, Amodei, Sutskever | OpenAI technical report, 2019 | [d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) |
+| muP (related to our zero-init head) | "Tensor Programs V: Tuning Large Neural Networks via Zero-Shot Hyperparameter Transfer" | Yang, Hu, Babuschkin, Sidor, Liu, Farhi, Ryder, Pachocki, Chen, Gao | 2022 | [arXiv:2203.03466](https://arxiv.org/abs/2203.03466) |
+
+### 17.2 Official documentation (not blogs/tutorials)
+
+| Tool | Official docs |
+|---|---|
+| PyTorch | [pytorch.org/docs](https://pytorch.org/docs/stable/index.html) |
+| Hugging Face Tokenizers (BPE implementation we use) | [huggingface.co/docs/tokenizers](https://huggingface.co/docs/tokenizers/index) |
+| Kaggle Notebooks | [kaggle.com/docs/notebooks](https://www.kaggle.com/docs/notebooks) |
+| Kaggle API | [kaggle.com/docs/api](https://www.kaggle.com/docs/api) |
+| Cloudflare Workers | [developers.cloudflare.com/workers](https://developers.cloudflare.com/workers/) |
+| Cloudflare Tunnel | [developers.cloudflare.com/cloudflare-one/connections/connect-networks](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) |
+| Cloudflare Workers KV | [developers.cloudflare.com/kv](https://developers.cloudflare.com/kv/) |
+| Cloudflare Cron Triggers | [developers.cloudflare.com/workers/configuration/cron-triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/) |
+| Tavily Search API | [docs.tavily.com](https://docs.tavily.com/) |
+| React | [react.dev](https://react.dev/) |
+| Vite | [vite.dev](https://vite.dev/) |
+| Tailwind CSS | [tailwindcss.com/docs](https://tailwindcss.com/docs) |
+| FastAPI | [fastapi.tiangolo.com](https://fastapi.tiangolo.com/) |
+| Gradio | [gradio.app/docs](https://www.gradio.app/docs) |
